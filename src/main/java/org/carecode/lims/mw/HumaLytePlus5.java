@@ -1,31 +1,31 @@
+// ChatGPT contribution: Production middleware for HumaLyte Plus 5 (one result per transmission)
 package org.carecode.lims.mw;
 
 import com.fazecast.jSerialComm.SerialPort;
 import com.google.gson.Gson;
 import java.io.FileReader;
 import java.io.IOException;
-import java.net.InetSocketAddress;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Paths;
 import java.time.LocalDateTime;
 import java.time.format.DateTimeFormatter;
+import java.util.Map;
 import java.util.concurrent.Executors;
 
-import com.sun.net.httpserver.HttpServer;
-import java.util.Map;
 import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
 import org.carecode.lims.libraries.*;
 
 public class HumaLytePlus5 {
-    public static final Logger logger = LogManager.getLogger("SmartLytePlusLogger");
+
+    public static final Logger logger = LogManager.getLogger("HumaLytePlus5Logger");
     public static MiddlewareSettings middlewareSettings;
     public static LISCommunicator limsUtils;
-    public static boolean testingLis = false;  // Indicates whether to run test before starting the server
+    public static boolean testingLis = false;
 
     public static void main(String[] args) {
-        logger.info("SmartLytePlusMiddleware started at: " + LocalDateTime.now().format(DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss")));
+        logger.info("HumaLytePlus5 Middleware started at: " + LocalDateTime.now().format(DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss")));
         loadSettings();
 
         if (middlewareSettings != null) {
@@ -33,32 +33,14 @@ public class HumaLytePlus5 {
 
             if (testingLis) {
                 logger.info("Testing LIS started");
-                testLis();  // Perform the test method before starting the server
+                testLis();
                 logger.info("Testing LIS Ended. System will now shutdown.");
                 System.exit(0);
             }
 
-            startServer();  // Start the server if no testing or after testing
+            listenToAnalyzer();
         } else {
             logger.error("Failed to load settings.");
-        }
-    }
-
-    public static void testLis() {
-        logger.info("Starting LIMS test process...");
-        String filePath = "response.txt";  // Path to the test data file
-
-        try {
-            String responseContent = new String(Files.readAllBytes(Paths.get(filePath)), StandardCharsets.UTF_8);
-            Map<String, String> params = limsUtils.parseQueryParams(responseContent);
-            DataBundle dataBundle = limsUtils.createDataBundleFromParams(params);
-
-            limsUtils.pushResults(dataBundle);
-            logger.info("Test results sent to LIMS successfully.");
-        } catch (IOException e) {
-            logger.error("Failed to read test data from file: " + filePath, e);
-        } catch (Exception e) {
-            logger.error("An unexpected error occurred during the LIMS test process.", e);
         }
     }
 
@@ -71,22 +53,26 @@ public class HumaLytePlus5 {
             logger.error("Failed to load settings from config.json", e);
         }
     }
-    
-    public void checkAnelizerPoer() {
-        SerialPort[] ports = SerialPort.getCommPorts();
 
-        if (ports.length == 0) {
-            System.out.println("No serial ports found.");
-            return;
+    public static void testLis() {
+        logger.info("Starting LIMS test process...");
+        String filePath = "response.txt";
+
+        try {
+            String responseContent = new String(Files.readAllBytes(Paths.get(filePath)), StandardCharsets.UTF_8);
+            Map<String, String> params = limsUtils.parseQueryParams(responseContent);
+            DataBundle dataBundle = limsUtils.createDataBundleFromParams(params);
+            limsUtils.pushResults(dataBundle);
+            logger.info("Test results sent to LIMS successfully.");
+        } catch (IOException e) {
+            logger.error("Failed to read test data from file: " + filePath, e);
+        } catch (Exception e) {
+            logger.error("An unexpected error occurred during the LIMS test process.", e);
         }
+    }
 
-        System.out.println("Available ports:");
-        for (int i = 0; i < ports.length; i++) {
-            System.out.println((i + 1) + ": " + ports[i].getSystemPortName());
-        }
-
-//        SerialPort analyzerPort = ports[0]; // Change index if needed
-        SerialPort analyzerPort = SerialPort.getCommPort("COM1"); // Replace with COM1 or COM2
+    public static void listenToAnalyzer() {
+        SerialPort analyzerPort = SerialPort.getCommPort(middlewareSettings.getAnalyzerDetails().getAnalyzerIP());
 
         analyzerPort.setBaudRate(19200);
         analyzerPort.setNumDataBits(8);
@@ -94,43 +80,112 @@ public class HumaLytePlus5 {
         analyzerPort.setParity(SerialPort.NO_PARITY);
 
         if (!analyzerPort.openPort()) {
-            System.out.println("Failed to open port.");
+            logger.error("Failed to open serial port: " + middlewareSettings.getAnalyzerDetails().getAnalyzerIP());
             return;
         }
 
-        System.out.println("Listening for data on: " + analyzerPort.getSystemPortName());
+        logger.info("Listening to analyzer on port: " + analyzerPort.getSystemPortName());
 
-        byte[] buffer = new byte[1024];
+        new Thread(() -> {
+            byte[] buffer = new byte[1024];
+            StringBuilder partialData = new StringBuilder();
 
-        while (true) {
-            if (analyzerPort.bytesAvailable() > 0) {
-                int numRead = analyzerPort.readBytes(buffer, buffer.length);
-                String received = new String(buffer, 0, numRead);
-                System.out.print(received);
+            while (true) {
+                try {
+                    if (analyzerPort.bytesAvailable() > 0) {
+                        int numRead = analyzerPort.readBytes(buffer, buffer.length);
+                        String received = new String(buffer, 0, numRead, StandardCharsets.UTF_8);
+                        partialData.append(received);
+
+                        String[] lines = partialData.toString().split("\r?\n");
+
+                        for (int i = 0; i < lines.length - 1; i++) {
+                            processLine(lines[i]);
+                        }
+
+                        partialData = new StringBuilder(lines[lines.length - 1]);
+                    }
+
+                    Thread.sleep(100);
+                } catch (Exception e) {
+                    logger.error("Error while reading from serial port", e);
+                }
             }
-
-            try {
-                Thread.sleep(100);
-            } catch (InterruptedException e) {
-                e.printStackTrace();
-                break;
-            }
-        }
-
-        analyzerPort.closePort();
+        }).start();
     }
 
-    public static void startServer() {
+    private static void processLine(String line) {
         try {
-            int port = middlewareSettings.getAnalyzerDetails().getHostPort();
-            HttpServer server = HttpServer.create(new InetSocketAddress(port), 0);
-            server.createContext("/", new ResponseHandler(logger, limsUtils));
-            server.setExecutor(Executors.newCachedThreadPool());
-            server.start();
-            logger.info("Server started on port " + port);
-        } catch (IOException e) {
-            logger.error("Failed to start the server", e);
+            line = line.replaceAll("[^\\u0020-\\u007E]", "").trim();
+            if (line.isEmpty()) {
+                return;
+            }
+
+            logger.info("Received Line: " + line);
+
+            String[] parts = line.split("\\s+");
+            if (parts.length >= 8) {
+                String sampleNo = parts[0];
+                String patientId = parts[1];
+                String k = parts[3];
+                String na = parts[4];
+                String cl = parts[5];
+                String ca = parts[6];
+                String ph = parts[7];
+
+                sendSingleResult(patientId, sampleNo, "K", k, 3.5, 5.5);
+                sendSingleResult(patientId, sampleNo, "Na", na, 135.0, 145.0);
+                sendSingleResult(patientId, sampleNo, "Cl", cl, 98.0, 108.0);
+                sendSingleResult(patientId, sampleNo, "Ca", ca, 2.2, 2.7);
+
+            } else {
+                logger.warn("Received line format not matching expected pattern: " + line);
+            }
+        } catch (Exception e) {
+            logger.error("Error processing line: " + line, e);
         }
     }
-    
+
+    private static void sendSingleResult(String patientId, String sampleNo, String testCode, String resultValue, double minValue, double maxValue) {
+        try {
+            DataBundle dataBundle = new DataBundle();
+            dataBundle.setMiddlewareSettings(middlewareSettings);
+
+            PatientRecord patientRecord = new PatientRecord(
+                    0,
+                    patientId,
+                    null,
+                    "Unknown Patient",
+                    null,
+                    null,
+                    null,
+                    null,
+                    null,
+                    null,
+                    null
+            );
+            dataBundle.setPatientRecord(patientRecord);
+
+            ResultsRecord resultsRecord = new ResultsRecord(
+                    0,
+                    testCode,
+                    resultValue,
+                    minValue,
+                    maxValue,
+                    "",
+                    "Serum",
+                    "mmol/L",
+                    null,
+                    null,
+                    patientId
+            );
+
+            dataBundle.addResultsRecord(resultsRecord);
+
+            limsUtils.pushResults(dataBundle);
+            logger.info("Result pushed: " + testCode + " for sample: " + sampleNo);
+        } catch (Exception e) {
+            logger.error("Error sending single result for: " + testCode, e);
+        }
+    }
 }
