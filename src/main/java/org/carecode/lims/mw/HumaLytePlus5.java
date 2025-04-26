@@ -1,5 +1,6 @@
 package org.carecode.lims.mw;
 
+import com.fazecast.jSerialComm.SerialPort;
 import com.google.gson.Gson;
 import java.io.FileReader;
 import java.io.IOException;
@@ -70,6 +71,54 @@ public class HumaLytePlus5 {
             logger.error("Failed to load settings from config.json", e);
         }
     }
+    
+    public void checkAnelizerPoer() {
+        SerialPort[] ports = SerialPort.getCommPorts();
+
+        if (ports.length == 0) {
+            System.out.println("No serial ports found.");
+            return;
+        }
+
+        System.out.println("Available ports:");
+        for (int i = 0; i < ports.length; i++) {
+            System.out.println((i + 1) + ": " + ports[i].getSystemPortName());
+        }
+
+//        SerialPort analyzerPort = ports[0]; // Change index if needed
+        SerialPort analyzerPort = SerialPort.getCommPort("COM1"); // Replace with COM1 or COM2
+
+        analyzerPort.setBaudRate(19200);
+        analyzerPort.setNumDataBits(8);
+        analyzerPort.setNumStopBits(SerialPort.ONE_STOP_BIT);
+        analyzerPort.setParity(SerialPort.NO_PARITY);
+
+        if (!analyzerPort.openPort()) {
+            System.out.println("Failed to open port.");
+            return;
+        }
+
+        System.out.println("Listening for data on: " + analyzerPort.getSystemPortName());
+
+        byte[] buffer = new byte[1024];
+
+        while (true) {
+            if (analyzerPort.bytesAvailable() > 0) {
+                int numRead = analyzerPort.readBytes(buffer, buffer.length);
+                String received = new String(buffer, 0, numRead);
+                System.out.print(received);
+            }
+
+            try {
+                Thread.sleep(100);
+            } catch (InterruptedException e) {
+                e.printStackTrace();
+                break;
+            }
+        }
+
+        analyzerPort.closePort();
+    }
 
     public static void startServer() {
         try {
@@ -83,4 +132,5 @@ public class HumaLytePlus5 {
             logger.error("Failed to start the server", e);
         }
     }
+    
 }
